@@ -25,7 +25,7 @@ function App() {
   const [generatedDocuments, setGeneratedDocuments] = useState([])
 
   // Backend URLs
-  const BACKEND_URL = 'http://localhost:5001'
+  const BACKEND_URL = 'https://3dhkilc8olz3.manus.space'
 
   // Fetch clients from backend
   useEffect(() => {
