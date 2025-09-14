@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button.jsx'
 import { Input } from '@/components/ui/input.jsx'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.jsx'
 import { ScrollArea } from '@/components/ui/scroll-area.jsx'
-import { Send, FileText, Users, Brain, Loader2, AlertCircle } from 'lucide-react'
+import { Send, FileText, Users, Brain, Loader2, AlertCircle, Download } from 'lucide-react'
 import axios from 'axios'
 import './App.css'
 
@@ -21,9 +21,11 @@ function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [isAiLoading, setIsAiLoading] = useState(false)
   const [aiError, setAiError] = useState(null)
+  const [isPdfGenerating, setIsPdfGenerating] = useState(false)
+  const [generatedDocuments, setGeneratedDocuments] = useState([])
 
   // Backend URLs
-  const BACKEND_URL = 'http://localhost:5000'
+  const BACKEND_URL = 'http://localhost:5001'
 
   // Fetch clients from backend
   useEffect(() => {
@@ -124,6 +126,81 @@ function App() {
     }
   }
 
+  const generatePDF = async (messageContent, messageId) => {
+    if (!messageContent || isPdfGenerating) return
+
+    setIsPdfGenerating(true)
+    
+    try {
+      const response = await axios.post(`${BACKEND_URL}/api/generate-pdf`, {
+        content: messageContent,
+        document_type: 'legal_advice',
+        client_name: clients.length > 0 ? clients[0].nome_completo : 'Valued Client',
+        metadata: {
+          message_id: messageId,
+          generated_from: 'chat_response'
+        }
+      }, {
+        timeout: 30000
+      })
+
+      if (response.data.success) {
+        const newDocument = {
+          id: response.data.document_id,
+          filename: response.data.filename,
+          title: response.data.title,
+          generated_at: response.data.generated_at,
+          size_bytes: response.data.size_bytes,
+          download_url: `${BACKEND_URL}${response.data.download_url}`,
+          message_id: messageId
+        }
+        
+        setGeneratedDocuments(prev => [newDocument, ...prev])
+        
+        // Update the message to show PDF was generated
+        setMessages(prev => prev.map(msg => 
+          msg.id === messageId 
+            ? { ...msg, pdfGenerated: true, documentId: response.data.document_id }
+            : msg
+        ))
+        
+        // Auto-download the PDF
+        downloadPDF(response.data.document_id, response.data.filename)
+        
+      } else {
+        console.error('PDF generation failed:', response.data)
+        alert('Failed to generate PDF document. Please try again.')
+      }
+    } catch (error) {
+      console.error('Error generating PDF:', error)
+      alert('Error generating PDF document. Please check your connection and try again.')
+    } finally {
+      setIsPdfGenerating(false)
+    }
+  }
+
+  const downloadPDF = async (documentId, filename) => {
+    try {
+      const response = await axios.get(`${BACKEND_URL}/api/download-document/${documentId}`, {
+        responseType: 'blob'
+      })
+      
+      // Create blob link to download
+      const url = window.URL.createObjectURL(new Blob([response.data]))
+      const link = document.createElement('a')
+      link.href = url
+      link.setAttribute('download', filename || `polaris_document_${documentId}.pdf`)
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(url)
+      
+    } catch (error) {
+      console.error('Error downloading PDF:', error)
+      alert('Error downloading PDF. Please try again.')
+    }
+  }
+
   const handleKeyPress = (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !isAiLoading) {
       e.preventDefault()
@@ -200,11 +277,43 @@ function App() {
                             <p className="text-xs opacity-70">
                               {message.timestamp.toLocaleTimeString()}
                             </p>
-                            {message.model && (
-                              <p className="text-xs opacity-70 ml-2">
-                                {message.model}
-                              </p>
-                            )}
+                            <div className="flex items-center space-x-2">
+                              {message.model && (
+                                <p className="text-xs opacity-70">
+                                  {message.model}
+                                </p>
+                              )}
+                              {message.type === 'assistant' && !message.isError && (
+                                <div className="flex items-center space-x-1">
+                                  {message.pdfGenerated ? (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-6 px-2 text-xs"
+                                      onClick={() => downloadPDF(message.documentId, `polaris_document_${message.documentId}.pdf`)}
+                                    >
+                                      <Download className="h-3 w-3 mr-1" />
+                                      Download PDF
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      className="h-6 px-2 text-xs"
+                                      onClick={() => generatePDF(message.content, message.id)}
+                                      disabled={isPdfGenerating}
+                                    >
+                                      {isPdfGenerating ? (
+                                        <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                                      ) : (
+                                        <FileText className="h-3 w-3 mr-1" />
+                                      )}
+                                      Generate PDF
+                                    </Button>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -311,17 +420,49 @@ function App() {
               <CardHeader className="pb-3">
                 <CardTitle className="flex items-center space-x-2">
                   <FileText className="h-5 w-5 text-purple-600" />
-                  <span>Document Viewer</span>
+                  <span>Generated Documents</span>
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-center py-8">
-                  <FileText className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                  <p className="text-sm text-gray-500 mb-3">No document selected</p>
-                  <p className="text-xs text-gray-400">
-                    Generated documents will appear here for review and download
-                  </p>
-                </div>
+                {generatedDocuments.length > 0 ? (
+                  <div className="space-y-3">
+                    {generatedDocuments.slice(0, 3).map((doc) => (
+                      <div key={doc.id} className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg">
+                        <h4 className="font-medium text-sm text-gray-900 dark:text-white">
+                          {doc.title}
+                        </h4>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {new Date(doc.generated_at).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          Size: {(doc.size_bytes / 1024).toFixed(1)} KB
+                        </p>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full mt-2"
+                          onClick={() => downloadPDF(doc.id, doc.filename)}
+                        >
+                          <Download className="h-3 w-3 mr-1" />
+                          Download PDF
+                        </Button>
+                      </div>
+                    ))}
+                    {generatedDocuments.length > 3 && (
+                      <p className="text-xs text-gray-500 text-center">
+                        +{generatedDocuments.length - 3} more documents
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="text-center py-8">
+                    <FileText className="h-12 w-12 text-gray-400 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500 mb-3">No documents generated yet</p>
+                    <p className="text-xs text-gray-400">
+                      Generate PDFs from AI responses using the "Generate PDF" button
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
