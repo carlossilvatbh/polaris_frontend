@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button.jsx'
 import { Input } from '@/components/ui/input.jsx'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card.jsx'
 import { ScrollArea } from '@/components/ui/scroll-area.jsx'
-import { Send, FileText, Users, Brain } from 'lucide-react'
+import { Send, FileText, Users, Brain, Loader2, AlertCircle } from 'lucide-react'
 import axios from 'axios'
 import './App.css'
 
@@ -19,15 +19,11 @@ function App() {
   const [inputMessage, setInputMessage] = useState('')
   const [clients, setClients] = useState([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isAiLoading, setIsAiLoading] = useState(false)
+  const [aiError, setAiError] = useState(null)
 
-  // Simulated responses for demo
-  const simulatedResponses = [
-    "I understand you need assistance with wealth planning. Let me analyze your requirements and suggest the best structure for your client.",
-    "Based on the information provided, I recommend considering a Delaware LLC structure with a Cayman feeder for international tax optimization.",
-    "For estate planning purposes, we should explore setting up an Irrevocable Life Insurance Trust (ILIT) to minimize estate taxes.",
-    "I can help you generate the necessary legal documents. Would you like me to create a trust agreement or corporate structure documents?",
-    "Let me review the latest tax regulations and treaty benefits that might apply to your client's situation."
-  ]
+  // Backend URLs
+  const BACKEND_URL = 'http://localhost:5000'
 
   // Fetch clients from backend
   useEffect(() => {
@@ -38,7 +34,7 @@ function App() {
     try {
       setIsLoading(true)
       // Using user_id = 1 for demo purposes
-      const response = await axios.get('http://localhost:5000/api/clientes?user_id=1&per_page=5')
+      const response = await axios.get(`${BACKEND_URL}/api/clientes?user_id=1&per_page=5`)
       setClients(response.data.clientes || [])
     } catch (error) {
       console.error('Error fetching clients:', error)
@@ -51,8 +47,8 @@ function App() {
     }
   }
 
-  const sendMessage = () => {
-    if (!inputMessage.trim()) return
+  const sendMessage = async () => {
+    if (!inputMessage.trim() || isAiLoading) return
 
     // Add user message
     const userMessage = {
@@ -63,23 +59,73 @@ function App() {
     }
 
     setMessages(prev => [...prev, userMessage])
+    const currentMessage = inputMessage
     setInputMessage('')
+    setIsAiLoading(true)
+    setAiError(null)
 
-    // Simulate AI response after a delay
-    setTimeout(() => {
-      const randomResponse = simulatedResponses[Math.floor(Math.random() * simulatedResponses.length)]
-      const assistantMessage = {
+    try {
+      // Call Claude AI via backend
+      const response = await axios.post(`${BACKEND_URL}/api/generate-document`, {
+        prompt: currentMessage,
+        context: 'This is a conversation with a wealth planning client seeking professional advice.',
+        document_type: 'chat'
+      }, {
+        timeout: 30000 // 30 second timeout
+      })
+
+      if (response.data.success) {
+        // Add AI response
+        const assistantMessage = {
+          id: Date.now() + 1,
+          type: 'assistant',
+          content: response.data.response,
+          timestamp: new Date(),
+          model: response.data.model,
+          usage: response.data.usage
+        }
+        setMessages(prev => [...prev, assistantMessage])
+      } else {
+        // Handle API error
+        const errorMessage = {
+          id: Date.now() + 1,
+          type: 'assistant',
+          content: response.data.response || 'I apologize, but I encountered an error processing your request.',
+          timestamp: new Date(),
+          isError: true
+        }
+        setMessages(prev => [...prev, errorMessage])
+        setAiError(response.data.error)
+      }
+    } catch (error) {
+      console.error('Error calling AI API:', error)
+      
+      let errorContent = 'I apologize, but I\'m having trouble connecting to the AI service. Please try again in a moment.'
+      
+      if (error.code === 'ECONNREFUSED') {
+        errorContent = 'The backend service appears to be offline. Please ensure the backend is running on port 5000.'
+      } else if (error.response?.status === 503) {
+        errorContent = 'The AI service is temporarily unavailable. Please try again later.'
+      } else if (error.response?.data?.response) {
+        errorContent = error.response.data.response
+      }
+
+      const errorMessage = {
         id: Date.now() + 1,
         type: 'assistant',
-        content: randomResponse,
-        timestamp: new Date()
+        content: errorContent,
+        timestamp: new Date(),
+        isError: true
       }
-      setMessages(prev => [...prev, assistantMessage])
-    }, 1000)
+      setMessages(prev => [...prev, errorMessage])
+      setAiError(error.message)
+    } finally {
+      setIsAiLoading(false)
+    }
   }
 
   const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isAiLoading) {
       e.preventDefault()
       sendMessage()
     }
@@ -101,6 +147,12 @@ function App() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
+              {aiError && (
+                <div className="flex items-center space-x-1 text-red-600">
+                  <AlertCircle className="h-4 w-4" />
+                  <span className="text-sm">AI Service Issue</span>
+                </div>
+              )}
               <div className="text-sm text-gray-600 dark:text-gray-300">
                 <span className="font-medium">{clients.length}</span> Clients Connected
               </div>
@@ -120,6 +172,9 @@ function App() {
                 <CardTitle className="flex items-center space-x-2">
                   <Brain className="h-5 w-5 text-blue-600" />
                   <span>AI Legal Assistant</span>
+                  {isAiLoading && (
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                  )}
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex-1 flex flex-col p-0">
@@ -135,16 +190,37 @@ function App() {
                           className={`max-w-[80%] rounded-lg px-4 py-2 ${
                             message.type === 'user'
                               ? 'bg-blue-600 text-white'
+                              : message.isError
+                              ? 'bg-red-100 dark:bg-red-900 text-red-900 dark:text-red-100 border border-red-200 dark:border-red-800'
                               : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-white'
                           }`}
                         >
-                          <p className="text-sm">{message.content}</p>
-                          <p className="text-xs opacity-70 mt-1">
-                            {message.timestamp.toLocaleTimeString()}
-                          </p>
+                          <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                          <div className="flex justify-between items-center mt-1">
+                            <p className="text-xs opacity-70">
+                              {message.timestamp.toLocaleTimeString()}
+                            </p>
+                            {message.model && (
+                              <p className="text-xs opacity-70 ml-2">
+                                {message.model}
+                              </p>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ))}
+                    {isAiLoading && (
+                      <div className="flex justify-start">
+                        <div className="bg-gray-100 dark:bg-gray-700 rounded-lg px-4 py-2">
+                          <div className="flex items-center space-x-2">
+                            <Loader2 className="h-4 w-4 animate-spin text-blue-600" />
+                            <p className="text-sm text-gray-600 dark:text-gray-300">
+                              POLARIS is thinking...
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </ScrollArea>
 
@@ -157,11 +233,26 @@ function App() {
                       onKeyPress={handleKeyPress}
                       placeholder="Ask about wealth planning, tax structures, or legal documents..."
                       className="flex-1"
+                      disabled={isAiLoading}
                     />
-                    <Button onClick={sendMessage} size="sm">
-                      <Send className="h-4 w-4" />
+                    <Button 
+                      onClick={sendMessage} 
+                      size="sm" 
+                      disabled={isAiLoading || !inputMessage.trim()}
+                    >
+                      {isAiLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Send className="h-4 w-4" />
+                      )}
                     </Button>
                   </div>
+                  {aiError && (
+                    <div className="mt-2 text-xs text-red-600 flex items-center space-x-1">
+                      <AlertCircle className="h-3 w-3" />
+                      <span>Last error: {aiError}</span>
+                    </div>
+                  )}
                 </div>
               </CardContent>
             </Card>
